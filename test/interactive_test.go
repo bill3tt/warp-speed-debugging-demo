@@ -22,24 +22,19 @@ func TestInteractiveExemplars(t *testing.T) {
 	// Make sure resources (e.g docker containers, network, dir) are cleaned.
 	t.Cleanup(e.Close)
 
-	// Setup Metrics
+	// Setup & start Metrics, Logs & Traces
 	prom := e2edb.NewPrometheus(e, "prometheus")
-
-	// Setup Logs
 	loki := NewLoki(e, "loki")
-
-	// Setup Traces
 	tempo := NewTempo(e, "tempo")
-
 	err = e2e.StartAndWaitReady(prom, loki, tempo)
 	testutil.Ok(t, err)
 
-	// Setup Grafana
+	// Setup & start Grafana
 	grafana := NewGrafana(e, "grafana",
 		"http://"+prom.InternalEndpoint("http"),
 		"http://"+loki.InternalEndpoint("http"),
-		"http://"+tempo.InternalEndpoint("http"))
-
+		"http://"+tempo.InternalEndpoint("http"),
+	)
 	err = e2e.StartAndWaitReady(grafana)
 	testutil.Ok(t, err)
 
@@ -54,7 +49,7 @@ type Grafana struct {
 	e2e.InstrumentedRunnable
 }
 
-func NewGrafana(env e2e.Environment, name string, promUrl string, lokiUrl string, tempoUrl string) *Grafana {
+func NewGrafana(env e2e.Environment, name string, promUrl string, lokiUrl string, tempoUrl string) e2e.InstrumentedRunnable {
 
 	ports := map[string]int{"http": 3000}
 
@@ -93,14 +88,14 @@ datasources:
 		return &Grafana{InstrumentedRunnable: e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana datasources failed"))}
 	}
 
-	return &Grafana{InstrumentedRunnable: f.Init(e2e.StartOptions{
+	return f.Init(e2e.StartOptions{
 		Image: "grafana/grafana:8.3.2",
 		User:  strconv.Itoa(os.Getuid()),
 		EnvVars: map[string]string{
 			"GF_PATHS_CONFIG":       filepath.Join(f.InternalDir(), "grafana.ini"),
 			"GF_PATHS_PROVISIONING": f.InternalDir(),
 		},
-	})}
+	})
 }
 
 func NewLoki(env e2e.Environment, name string) e2e.InstrumentedRunnable {
@@ -172,7 +167,7 @@ table_manager:
 	}
 
 	args := e2e.BuildArgs(map[string]string{
-		"-config.file": filepath.Join(f.InternalDir(),"loki.yaml"),
+		"-config.file":      filepath.Join(f.InternalDir(), "loki.yaml"),
 		"-ingester.wal-dir": f.InternalDir(),
 	})
 
@@ -235,11 +230,11 @@ storage:
       queue_depth: 10000
 `
 	ports := map[string]int{
-		"http": 3200,
-		"jaeger": 14268,
+		"http":      3200,
+		"jaeger":    14268,
 		"oltp-grpc": 4317,
 		"oltp-http": 4318,
-		"zipkin": 9411,
+		"zipkin":    9411,
 	}
 
 	f := e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, "http").Future()
@@ -249,7 +244,7 @@ storage:
 	}
 
 	args := e2e.BuildArgs(map[string]string{
-		"-config.file": filepath.Join(f.InternalDir(),"tempo.yaml"),
+		"-config.file": filepath.Join(f.InternalDir(), "tempo.yaml"),
 	})
 
 	return f.Init(
