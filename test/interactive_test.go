@@ -3,7 +3,6 @@ package test
 import (
 	"fmt"
 	"github.com/efficientgo/e2e"
-	e2edb "github.com/efficientgo/e2e/db"
 	e2einteractive "github.com/efficientgo/e2e/interactive"
 	"github.com/efficientgo/tools/core/pkg/testutil"
 	"github.com/pkg/errors"
@@ -22,11 +21,20 @@ func TestInteractiveExemplars(t *testing.T) {
 	// Make sure resources (e.g docker containers, network, dir) are cleaned.
 	t.Cleanup(e.Close)
 
-	// Setup & start Metrics, Logs & Traces
-	prom := e2edb.NewPrometheus(e, "prometheus")
+	// Setup Logs & Traces
 	loki := NewLoki(e, "loki")
 	tempo := NewTempo(e, "tempo")
-	err = e2e.StartAndWaitReady(prom, loki, tempo)
+	err = e2e.StartAndWaitReady(loki, tempo)
+	testutil.Ok(t, err)
+
+	// Setup Application
+	demo := NewDemo(e, "demo")
+	err = e2e.StartAndWaitReady(demo)
+	testutil.Ok(t, err)
+
+	// Setup Metrics
+	prom := NewPrometheus(e, "prometheus", demo.InternalEndpoint("http"))
+	err = e2e.StartAndWaitReady(prom)
 	testutil.Ok(t, err)
 
 	// Setup & start Grafana
@@ -45,8 +53,65 @@ func TestInteractiveExemplars(t *testing.T) {
 	err = e2einteractive.RunUntilEndpointHit()
 }
 
-type Grafana struct {
-	e2e.InstrumentedRunnable
+func NewDemo(env e2e.Environment, name string) e2e.InstrumentedRunnable {
+	ports := map[string]int{"http": 8080}
+
+	return e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, "http").Init(e2e.StartOptions{
+		Image: "warp-speed-debugging:latest",
+		User:  strconv.Itoa(os.Getuid()),
+		Readiness: e2e.NewHTTPReadinessProbe("http", "/metrics", 200, 200),
+	})
+}
+
+func NewPrometheus(env e2e.Environment, name string, demoApplicationUrl string) e2e.InstrumentedRunnable {
+
+	ports := map[string]int{"http": 9090}
+
+	f := e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, "http").Future()
+	config := fmt.Sprintf(`
+global:
+  external_labels:
+    prometheus: %v
+scrape_configs:
+- job_name: 'myself'
+  # Quick scrapes for test purposes.
+  scrape_interval: 1s
+  scrape_timeout: 1s
+  static_configs:
+  - targets: [%s]
+  relabel_configs:
+  - source_labels: ['__address__']
+    regex: '^.+:80$'
+    action: drop
+- job_name: 'application'
+  scrape_interval: 1s
+  scrape_timeout: 1s
+  static_configs:
+  - targets: [%s]
+  relabel_configs:
+  - source_labels: ['__address__']
+    regex: '^.+:80$'
+    action: drop
+`, name, f.InternalEndpoint("http"), demoApplicationUrl)
+	if err := ioutil.WriteFile(filepath.Join(f.Dir(), "prometheus.yml"), []byte(config), 0600); err != nil {
+		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create prometheus config failed"))
+	}
+
+	args := map[string]string{
+		"--config.file":                     filepath.Join(f.InternalDir(), "prometheus.yml"),
+		"--storage.tsdb.path":               f.InternalDir(),
+		"--storage.tsdb.max-block-duration": "2h", // No compaction - mostly not needed for quick test.
+		"--log.level":                       "info",
+		"--web.listen-address":              fmt.Sprintf(":%d", ports["http"]),
+		"--enable-feature":                  "exemplar-storage",
+	}
+
+	return f.Init(e2e.StartOptions{
+		Image:     "quay.io/prometheus/prometheus:v2.35.0",
+		Command:   e2e.NewCommandWithoutEntrypoint("prometheus", e2e.BuildArgs(args)...),
+		Readiness: e2e.NewHTTPReadinessProbe("http", "/-/ready", 200, 200),
+		User:      strconv.Itoa(os.Getuid()),
+	})
 }
 
 func NewGrafana(env e2e.Environment, name string, promUrl string, lokiUrl string, tempoUrl string) e2e.InstrumentedRunnable {
@@ -67,25 +132,35 @@ org_role = Admin
 cookie_samesite = none
 `)
 	if err := ioutil.WriteFile(filepath.Join(f.Dir(), "grafana.ini"), []byte(config), 0600); err != nil {
-		return &Grafana{InstrumentedRunnable: e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana config failed"))}
+		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana config failed"))
 	}
 
 	datasources := fmt.Sprintf(`
 datasources:
   - name: Prometheus
+    uid: prometheus
     url: %s
     type: prometheus
+    jsonData:
+      httpMethod: POST
+      exemplarTraceIdDestinations:
+        - datasourceUid: tempo
+          name: traceID
+        - datasourceUid: loki
+          name: traceID
   - name: Loki
+    uid: loki
     url: %s
     type: loki
   - name: Tempo
+    uid: tempo
     url: %s
     type: tempo`, promUrl, lokiUrl, tempoUrl)
 	if err := os.MkdirAll(filepath.Join(f.Dir(), "datasources"), os.ModePerm); err != nil {
-		return &Grafana{InstrumentedRunnable: e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana datasources failed"))}
+		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana datasources dir failed"))
 	}
 	if err := ioutil.WriteFile(filepath.Join(f.Dir(), "datasources", "datasources.yaml"), []byte(datasources), os.ModePerm); err != nil {
-		return &Grafana{InstrumentedRunnable: e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana datasources failed"))}
+		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana datasources failed"))
 	}
 
 	return f.Init(e2e.StartOptions{
