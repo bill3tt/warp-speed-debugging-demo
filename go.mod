@@ -7,4 +7,6 @@ require (
 	github.com/efficientgo/tools/core v0.0.0-20220225185207-fe763185946b
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.12.1
+	github.com/sirupsen/logrus v1.6.0
+	google.golang.org/genproto v0.0.0-20210113195801-ae06605f4595 // indirect
 )

@@ -136,6 +136,7 @@ cookie_samesite = none
 	}
 
 	datasources := fmt.Sprintf(`
+apiVersion: 1
 datasources:
   - name: Prometheus
     uid: prometheus

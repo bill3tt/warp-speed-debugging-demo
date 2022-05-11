@@ -41,4 +41,5 @@ test-interactive: container-test
 clean:
 	-rm -rf tmp/bin
 	-rm -rf tmp/src
+	-rm -rf test/e2e_*
 	-rm $(BIN_NAME)
