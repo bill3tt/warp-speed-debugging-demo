@@ -17,4 +17,5 @@ tmp/
 .idea
 e2e_*
 warp-speed-debugging-demo
-logs.txt
+*.txt
+*.json

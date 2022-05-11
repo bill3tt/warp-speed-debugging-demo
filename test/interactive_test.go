@@ -10,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-
 	"testing"
+)
+
+const (
+	logsDir = "logs"
 )
 
 func TestInteractiveExemplars(t *testing.T) {
@@ -27,9 +30,16 @@ func TestInteractiveExemplars(t *testing.T) {
 	err = e2e.StartAndWaitReady(loki, tempo)
 	testutil.Ok(t, err)
 
+
+
 	// Setup Application
-	demo := NewDemo(e, "demo")
+	demo, internalLogFilePath := NewDemo(e, "demo", tempo.InternalEndpoint("oltp-http"))
 	err = e2e.StartAndWaitReady(demo)
+	testutil.Ok(t, err)
+
+	// Setup Promtail
+	tail := NewPromtail(e, "promtail", loki.InternalEndpoint("http"), internalLogFilePath)
+	err = e2e.StartAndWaitReady(tail)
 	testutil.Ok(t, err)
 
 	// Setup Metrics
@@ -53,14 +63,86 @@ func TestInteractiveExemplars(t *testing.T) {
 	err = e2einteractive.RunUntilEndpointHit()
 }
 
-func NewDemo(env e2e.Environment, name string) e2e.InstrumentedRunnable {
+func NewPromtail(env e2e.Environment, name string, lokiURL string, internalLogsPath string) e2e.InstrumentedRunnable {
+	ports := map[string]int{"http": 9080}
+
+	promtail := e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, "http").Future()
+
+	config := fmt.Sprintf(`
+server:
+  http_listen_address: 0.0.0.0
+  http_listen_port: %d
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://%s/loki/api/v1/push#
+    batchwait: 1s
+
+scrape_configs:
+
+- job_name: demo
+  static_configs:
+  - targets:
+      - localhost
+    labels:
+      job: demo
+      __path__: %s
+  pipeline_stages:
+  - json:
+      expressions:
+        traceId: traceId
+        level: level
+  - labels:
+      traceId:
+      level:
+`, ports["http"], lokiURL, internalLogsPath)
+
+	configFileName := "config.yaml"
+	configPath := filepath.Join(promtail.Dir(), configFileName)
+	internalConfigPath := filepath.Join(promtail.InternalDir(), configFileName)
+
+	if err := ioutil.WriteFile(configPath, []byte(config), 0600); err != nil {
+		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create prometheus config failed"))
+	}
+
+	args := map[string]string {
+		"-config.file": internalConfigPath,
+	}
+
+	return promtail.Init(e2e.StartOptions{
+		Image:   "grafana/promtail:2.5.0",
+		User:    strconv.Itoa(os.Getuid()),
+		Command: e2e.NewCommandWithoutEntrypoint("promtail", e2e.BuildArgs(args)...),
+	})
+
+}
+
+func NewDemo(env e2e.Environment, name string, tempoUrl string) (e2e.InstrumentedRunnable, string) {
 	ports := map[string]int{"http": 8080}
 
-	return e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, "http").Init(e2e.StartOptions{
-		Image: "warp-speed-debugging:latest",
-		User:  strconv.Itoa(os.Getuid()),
+	demo := e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, "http").Future()
+
+	if err := os.MkdirAll(filepath.Join(demo.Dir(), logsDir), os.ModePerm); err != nil {
+		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create logs dir failed")), ""
+	}
+
+	internalLogsPath := filepath.Join(demo.InternalDir(), logsDir, "logs.txt")
+
+	fmt.Println(tempoUrl)
+
+	args := map[string]string{
+		"-log.file":       internalLogsPath,
+		"-trace.endpoint": tempoUrl,
+	}
+
+	return demo.Init(e2e.StartOptions{
+		Image:     "warp-speed-debugging:latest",
+		User:      strconv.Itoa(os.Getuid()),
+		Command:   e2e.NewCommandWithoutEntrypoint("warp-speed-debugging-demo", e2e.BuildArgs(args)...),
 		Readiness: e2e.NewHTTPReadinessProbe("http", "/metrics", 200, 200),
-	})
+	}), internalLogsPath
 }
 
 func NewPrometheus(env e2e.Environment, name string, demoApplicationUrl string) e2e.InstrumentedRunnable {
@@ -130,6 +212,9 @@ org_role = Admin
 
 [security]
 cookie_samesite = none
+
+[feature_toggles]
+enable = tempoSearch tempoBackendSearch
 `)
 	if err := ioutil.WriteFile(filepath.Join(f.Dir(), "grafana.ini"), []byte(config), 0600); err != nil {
 		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana config failed"))
@@ -146,9 +231,10 @@ datasources:
       httpMethod: POST
       exemplarTraceIdDestinations:
         - datasourceUid: tempo
-          name: traceID
+          name: traceId
         - datasourceUid: loki
-          name: traceID
+          name: traceId
+          url: 
   - name: Loki
     uid: loki
     url: %s
@@ -304,6 +390,8 @@ storage:
     pool:
       max_workers: 100                 # worker pool determines the number of parallel requests to the object store backend
       queue_depth: 10000
+
+search_enabled: true
 `
 	ports := map[string]int{
 		"http":      3200,
