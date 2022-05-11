@@ -3,11 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	lokiClient "github.com/grafana/loki-client-go/loki"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/model"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"math/rand"
@@ -22,7 +20,6 @@ func main() {
 		normDomain = flag.Float64("normal.domain", 10, "The domain for the normal distribution.")
 		normMean   = flag.Float64("normal.mean", 100, "The mean for the normal distribution.")
 		logFile    = flag.String("log.file", "logs.txt", "The file used to write logs to.")
-		lokiUrl    = flag.String("loki.url", "", "The URL to send logs to Loki")
 	)
 	flag.Parse()
 
@@ -32,18 +29,6 @@ func main() {
 	}
 	log.SetOutput(io.MultiWriter(os.Stdout, file))
 	log.SetFormatter(&log.JSONFormatter{})
-
-	cfg, err := lokiClient.NewDefaultConfig(*lokiUrl)
-	if err != nil {
-		log.Fatal("failed to create loki config: %s", err)
-	}
-
-	logger := log.New()
-
-	logClient, err := lokiClient.NewWithLogger(cfg, logger.Out)
-	if err != nil {
-		log.Fatal("failed to create loki client: %s", err)
-	}
 
 	var (
 		// The same as above, but now as a histogram, and only for the normal
@@ -70,13 +55,6 @@ func main() {
 				v, prometheus.Labels{"traceID": traceId},
 			)
 			log.WithField("traceId", traceId).Infof("Observed value %f", v)
-			err := logClient.Handle(model.LabelSet{
-				"traceId": model.LabelValue(traceId),
-				"app":     "warp-speed-debugging-demo",
-			}, time.Now(), fmt.Sprintf("Observed value %f", v))
-			if err != nil {
-				log.Fatalf("failed to handle log: %s\n", err)
-			}
 			time.Sleep(500 * time.Millisecond)
 		}
 	}()
