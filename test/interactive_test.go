@@ -30,8 +30,6 @@ func TestInteractiveExemplars(t *testing.T) {
 	err = e2e.StartAndWaitReady(loki, tempo)
 	testutil.Ok(t, err)
 
-
-
 	// Setup Application
 	demo, internalLogFilePath := NewDemo(e, "demo", tempo.InternalEndpoint("oltp-http"))
 	err = e2e.StartAndWaitReady(demo)
@@ -232,17 +230,10 @@ datasources:
       exemplarTraceIdDestinations:
         - datasourceUid: tempo
           name: traceId
-        - datasourceUid: loki
-          name: traceId
-          url: 
-  - name: Loki
-    uid: loki
-    url: %s
-    type: loki
   - name: Tempo
     uid: tempo
     url: %s
-    type: tempo`, promUrl, lokiUrl, tempoUrl)
+    type: tempo`, promUrl, tempoUrl)
 	if err := os.MkdirAll(filepath.Join(f.Dir(), "datasources"), os.ModePerm); err != nil {
 		return e2e.NewErrInstrumentedRunnable(name, errors.Wrap(err, "create grafana datasources dir failed"))
 	}

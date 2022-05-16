@@ -16,6 +16,7 @@ import (
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ var spanOptions = []trace.SpanStartOption{
 	trace.WithSpanKind(trace.SpanKindServer),
 	trace.WithAttributes([]attribute.KeyValue{
 		attribute.String("environment", "demo"),
+		attribute.String("service.name", "Fibonacci"),
 		attribute.String("job", "warp-speed-debugging"),
 	}...),
 }
@@ -39,12 +41,11 @@ func newStdOutExporter(w io.Writer) (tracesdk.SpanExporter, error) {
 	)
 }
 
-
 func main() {
 	var (
 		addr          = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
-		normDomain    = flag.Float64("normal.domain", 10, "The domain for the normal distribution.")
-		normMean      = flag.Float64("normal.mean", 100, "The mean for the normal distribution.")
+		normDomain    = flag.Float64("normal.domain", 5, "The domain for the normal distribution.")
+		normMean      = flag.Float64("normal.mean", 0, "The mean for the normal distribution.")
 		logFilePath   = flag.String("log.file", "logs.txt", "The log file used to write logs to.")
 		traceFilePath = flag.String("trace.logFile", "traces.txt", "The logFile used to write logs to.")
 		traceEndpoint = flag.String("trace.endpoint", "", "The endpoint to send traces to.")
@@ -107,9 +108,8 @@ func main() {
 		// normal distribution, with 20 buckets centered on the mean, each
 		// half-sigma wide.
 		rpcDurationsHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "demo_rpc_durations_histogram_seconds",
-			Help:    "RPC latency distributions.",
-			Buckets: prometheus.LinearBuckets(*normMean-5**normDomain, .5**normDomain, 20),
+			Name: "demo_rpc_durations_histogram_seconds",
+			Help: "RPC latency distributions.",
 		})
 	)
 
@@ -120,36 +120,26 @@ func main() {
 
 	go func() {
 		for {
-			// Each execution of the run loop, we should get a new "root" span and context.
-			parentCtx, parent := otel.Tracer("demo").Start(context.Background(), "parent_span", spanOptions...)
-			parent.SetAttributes(attribute.String("http.verb", "GET"))
+			start := time.Now()
+			ctx, tracer := otel.Tracer("demo").Start(context.Background(), "API Call", spanOptions...)
+			traceId := tracer.SpanContext().TraceID().String()
 
-			child1Ctx, child1 := otel.Tracer("demo").Start(parentCtx, "child_1_span", spanOptions...)
-			child1.SetAttributes(attribute.String("http.verb", "GET"))
-
-			_, grandChild1 := otel.Tracer("demo").Start(child1Ctx, "grand_child_1_span", spanOptions...)
-			grandChild1.SetAttributes(attribute.String("http.verb", "GET"))
-			time.Sleep(100 * time.Millisecond)
-			grandChild1.End()
-
-			time.Sleep(100 * time.Millisecond)
-			child1.End()
-
-			_, child2 := otel.Tracer("demo").Start(parentCtx, "child_2_span", spanOptions...)
-			child2.SetAttributes(attribute.String("http.verb", "GET"))
-			time.Sleep(100 * time.Millisecond)
-			child2.End()
-
-			traceId := parent.SpanContext().TraceID().String()
+			// Pick the fibonacci number we're going to generate
 			v := (rand.NormFloat64() * *normDomain) + *normMean
+			v = math.Round(math.Abs(v))
+			n := int(v)
+
+			log.WithField("traceId", traceId).WithField("Fibonacci", n).Info("Beginning calculation")
+			result := naiveFibonacci(ctx, n)
+			elapsed := time.Since(start).Seconds()
+
+			tracer.End()
 			rpcDurationsHistogram.(prometheus.ExemplarObserver).ObserveWithExemplar(
-				v, prometheus.Labels{"traceId": traceId},
+				elapsed, prometheus.Labels{"traceId": traceId},
 			)
 
-			log.WithField("traceId", traceId).Infof("Observed value %f", v)
+			log.WithField("traceId", traceId).WithField("Fibonacci", n).WithField("Answer", result).WithField("duration", elapsed).Info("Completed calculation")
 			time.Sleep(500 * time.Millisecond)
-
-			parent.End()
 		}
 	}()
 
@@ -162,4 +152,28 @@ func main() {
 		},
 	))
 	log.Fatal(http.ListenAndServe(*addr, nil))
+}
+
+func naiveFibonacci(ctx context.Context, n int) int {
+	var spanOptions = []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes([]attribute.KeyValue{
+			attribute.String("environment", "demo"),
+			attribute.String("service.name", "Fibonacci"),
+			attribute.Int("Fibonacci", n),
+		}...),
+	}
+
+	ctx, tr := otel.Tracer("demo").Start(ctx, "Fibonacci", spanOptions...)
+	time.Sleep(10 * time.Millisecond)
+	defer tr.End()
+
+	if n == 2 {
+		return 1
+	} else if n == 1 {
+		return 0
+	} else if n == 0 {
+		return 0
+	}
+	return naiveFibonacci(ctx, n-1) + naiveFibonacci(ctx, n-2)
 }
