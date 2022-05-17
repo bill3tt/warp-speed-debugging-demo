@@ -230,6 +230,8 @@ datasources:
       exemplarTraceIdDestinations:
         - datasourceUid: tempo
           name: traceId
+        - name: container
+          url: https://demo.parca.dev/?expression_a=parca_agent_cpu:samples:count:cpu:nanoseconds:delta{container="parca"}
   - name: Tempo
     uid: tempo
     url: %s

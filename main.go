@@ -135,7 +135,7 @@ func main() {
 
 			tracer.End()
 			rpcDurationsHistogram.(prometheus.ExemplarObserver).ObserveWithExemplar(
-				elapsed, prometheus.Labels{"traceId": traceId},
+				elapsed, prometheus.Labels{"traceId": traceId, "container": "parca"},
 			)
 
 			log.WithField("traceId", traceId).WithField("Fibonacci", n).WithField("Answer", result).WithField("duration", elapsed).Info("Completed calculation")
